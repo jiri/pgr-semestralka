@@ -137,32 +137,28 @@ class Camera {
 
 class CameraController {
   private:
-    Camera *camera;
+    vector<Camera *> cameras;
+    GLuint cameraIndex = 0;
 
-    bool keys[4];
+    bool keys[6];
 
     GLfloat speed;
 
   public:
     CameraController()
-      : CameraController(nullptr)
-    { }
-
-    CameraController(Camera *c)
-      : camera { c }
-      , keys { false }
+      : keys { false }
       , speed { 5.0f }
     { }
 
-    void setCamera(Camera *c) {
-      camera = c;
+    void addCamera(Camera *c) {
+      cameras.push_back(c);
+    }
+
+    Camera * camera() {
+      return cameras[cameraIndex];
     }
 
     void handleKey(int key, int action) {
-      if (camera == nullptr) {
-        return;
-      }
-
       bool mod = false;
       
       switch (action) {
@@ -195,6 +191,21 @@ class CameraController {
         case GLFW_KEY_RIGHT:
           keys[3] = mod;
           break;
+        case GLFW_KEY_Q:
+          keys[4] = mod;
+          break;
+        case GLFW_KEY_E:
+          keys[5] = mod;
+          break;
+    
+        case GLFW_KEY_TAB:
+          if (action == GLFW_PRESS) {
+            cameraIndex += 1;
+            cameraIndex %= cameras.size();
+
+            printf("Switching to camera %u\n", cameraIndex);
+          }
+          break;
 
         default:
           break;
@@ -202,7 +213,13 @@ class CameraController {
     }
 
     void handleMouse(int dx, int dy) {
-      camera->pitch += dy * 0.1f;
+      if (cameras.empty()) {
+        return;
+      }
+
+      Camera *camera = cameras[cameraIndex];
+
+      camera->pitch -= dy * 0.1f;
       camera->yaw   += dx * 0.1f;
 
       if (camera->pitch > 89.0f) {
@@ -220,10 +237,18 @@ class CameraController {
     }
 
     void update(GLfloat delta) {
+      if (cameras.empty()) {
+        return;
+      }
+
+      Camera *camera = cameras[cameraIndex];
+
       if (keys[0]) { camera->eye += delta * speed * camera->direction; }
       if (keys[1]) { camera->eye -= delta * speed * camera->direction; }
       if (keys[2]) { camera->eye -= delta * speed * camera->right;     }
       if (keys[3]) { camera->eye += delta * speed * camera->right;     }
+      if (keys[4]) { camera->eye -= delta * speed * camera->up;        }
+      if (keys[5]) { camera->eye += delta * speed * camera->up;        }
 
       camera->updateViewMatrix();
     }
@@ -302,7 +327,7 @@ int main() {
     0, 4, 1,  5, 0, 4,
     5, 4, 6,  5, 6, 7,
     6, 2, 3,  6, 3, 7,
-    1, 5, 7,  1, 7, 3,
+    1, 5, 3,  5, 7, 3,
   };
 
   GLuint vao;
@@ -327,8 +352,11 @@ int main() {
   GLuint simple = create_program("shd/simple.vert", "shd/simple.frag");
 
   /* GLM math */
-  Camera camera = Camera::perspectiveCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 75.0f, 800.0f / 600.0f);
-  controller.setCamera(&camera);
+  Camera c1 = Camera::perspectiveCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 75.0f, 800.0f / 600.0f);
+  controller.addCamera(&c1);
+
+  Camera c2 = Camera::perspectiveCamera(vec3(5.0f, 8.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 75.0f, 800.0f / 600.0f);
+  controller.addCamera(&c2);
   
   /* Timing */
   GLfloat delta = 0.0f;
@@ -352,7 +380,7 @@ int main() {
     glBindVertexArray(vao);
     glUseProgram(simple);
 
-    mat4 mvp = camera.projection * camera.view;
+    mat4 mvp = controller.camera()->projection * controller.camera()->view;
     GLuint mvp_loc = glGetUniformLocation(simple, "MVP");
     glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, value_ptr(mvp));
 
