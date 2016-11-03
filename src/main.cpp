@@ -125,7 +125,7 @@ class Camera {
     };
 
     static Camera orthographicCamera(const vec3 &e, const vec3 &c, GLfloat left, GLfloat right, GLfloat bottom, GLfloat top) {
-      mat4 projection = ortho(left, right, bottom, top);
+      mat4 projection = ortho(left, right, bottom, top, 0.01f, 100.0f);
       return Camera(projection, e, c);
     }
 
@@ -300,7 +300,7 @@ int main() {
   }
 
   glEnable(GL_DEPTH_TEST);
-  glEnable(GL_LINE_SMOOTH);
+  glEnable(GL_CULL_FACE);
 
   /* VSync on */
   glfwSwapInterval(1);
@@ -324,7 +324,7 @@ int main() {
   vector<GLuint> indices {
     0, 1, 2,  1, 3, 2,
     0, 2, 4,  4, 2, 6,
-    0, 4, 1,  5, 0, 4,
+    0, 4, 1,  5, 1, 4,
     5, 4, 6,  5, 6, 7,
     6, 2, 3,  6, 3, 7,
     1, 5, 3,  5, 7, 3,
@@ -349,13 +349,14 @@ int main() {
   glBindVertexArray(0);
 
   /* Load shaders */
-  GLuint simple = create_program("shd/simple.vert", "shd/simple.frag");
+  GLuint simple  = create_program("shd/simple.vert",  "shd/unicolor.frag");
+  GLuint outline = create_program("shd/outline.vert", "shd/unicolor.frag");
 
   /* GLM math */
-  Camera c1 = Camera::perspectiveCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 75.0f, 800.0f / 600.0f);
+  Camera c1 = Camera::perspectiveCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 60.0f, 800.0f / 600.0f);
   controller.addCamera(&c1);
 
-  Camera c2 = Camera::perspectiveCamera(vec3(5.0f, 8.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 75.0f, 800.0f / 600.0f);
+  Camera c2 = Camera::orthographicCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), -3.0f, 3.0f, 3.0f, -3.0f);
   controller.addCamera(&c2);
   
   /* Timing */
@@ -378,18 +379,43 @@ int main() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glBindVertexArray(vao);
-    glUseProgram(simple);
 
     mat4 mvp = controller.camera()->projection * controller.camera()->view;
-    GLuint mvp_loc = glGetUniformLocation(simple, "MVP");
-    glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, value_ptr(mvp));
 
-    glLineWidth(20.0f);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glUseProgram(outline);
+      GLuint mvp_loc_outline = glGetUniformLocation(outline, "MVP");
+      glUniformMatrix4fv(mvp_loc_outline, 1, GL_FALSE, value_ptr(mvp));
 
-    glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
+      GLuint color_loc_outline = glGetUniformLocation(outline, "color");
+      glUniform3f(color_loc_outline, 0.898f, 0.867f, 0.796f);
 
+      glCullFace(GL_FRONT);
+      glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
     glUseProgram(0);
+
+    glUseProgram(simple);
+      GLuint mvp_loc_simple = glGetUniformLocation(simple, "MVP");
+      glUniformMatrix4fv(mvp_loc_simple, 1, GL_FALSE, value_ptr(mvp));
+
+      GLuint color_loc_simple = glGetUniformLocation(outline, "color");
+      glUniform3f(color_loc_simple, 0.655f, 0.773f, 0.741f);
+
+      glCullFace(GL_BACK);
+      glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
+    glUseProgram(0);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glUseProgram(outline);
+      mvp_loc_outline = glGetUniformLocation(simple, "MVP");
+      glUniformMatrix4fv(mvp_loc_outline, 1, GL_FALSE, value_ptr(mvp));
+
+      color_loc_outline = glGetUniformLocation(outline, "color");
+      glUniform3f(color_loc_outline, 0.922f, 0.482f, 0.349f);
+
+      glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
+    glUseProgram(0);
+
     glBindVertexArray(0);
 
     glfwSwapBuffers(window);
