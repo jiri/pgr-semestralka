@@ -1,6 +1,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <iostream>
+#include <stdexcept>
 using namespace std;
 
 #define GLFW_INCLUDE_NONE
@@ -14,6 +16,9 @@ using namespace std;
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/rotate_vector.hpp>
 using namespace glm;
+
+#include <boost/filesystem.hpp>
+using namespace boost::filesystem;
 
 char *slurp_file(const char *path) {
   char *buffer = nullptr;
@@ -66,17 +71,23 @@ GLuint create_program(const char *vpath, const char *fpath) {
   glAttachShader(id, vsh);
   glAttachShader(id, fsh);
   glLinkProgram(id);
-  
+
   glDeleteShader(vsh);
   glDeleteShader(fsh);
+  
+  GLint success = 0;
+  glGetProgramiv(id, GL_LINK_STATUS, &success);
 
-  GLint success;
-  GLchar infoLog[512];
-  glGetProgramiv(id, GL_COMPILE_STATUS, &success);
+  if (success == GL_FALSE) {
+    GLint maxLength = 0;
+    glGetProgramiv(id, GL_INFO_LOG_LENGTH, &maxLength);
 
-  if (!success) {
+    GLchar *infoLog = (GLchar *) malloc(maxLength);
+
     glGetProgramInfoLog(id, 512, nullptr, infoLog);
-    fprintf(stderr, "Compilation of program failed:\n%s", infoLog);
+
+    fprintf(stderr, "Compilation of program ('%s', '%s') failed:\n%s", vpath, fpath, infoLog);
+    free(infoLog);
   }
 
   return id;
@@ -125,7 +136,7 @@ class Camera {
     };
 
     static Camera orthographicCamera(const vec3 &e, const vec3 &c, GLfloat left, GLfloat right, GLfloat bottom, GLfloat top) {
-      mat4 projection = ortho(left, right, bottom, top, 0.01f, 100.0f);
+      mat4 projection = ortho(left, right, bottom, top, -100.0f, 100.0f);
       return Camera(projection, e, c);
     }
 
@@ -264,11 +275,128 @@ void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
   static double old_xpos = xpos;
   static double old_ypos = ypos;
 
-  controller.handleMouse((int) xpos - old_xpos, (int) ypos - old_ypos);
+  controller.handleMouse(xpos - old_xpos, ypos - old_ypos);
 
   old_xpos = xpos;
   old_ypos = ypos;
 }
+
+class Shader {
+  friend class Program;
+
+  private:
+    GLuint id;
+
+  public:
+    Shader(const char *path, GLenum type = 0) {
+      if (type == 0) {
+        if (extension(path) == ".vert") { type = GL_VERTEX_SHADER;   }
+        if (extension(path) == ".frag") { type = GL_FRAGMENT_SHADER; }
+
+        if (type == 0) {
+          throw invalid_argument {
+            "Unrecognized file extension '" + extension(path) + "'"
+          };
+        }
+      }
+
+      id = glCreateShader(type);
+
+      char *src = slurp_file(path);
+      glShaderSource(id, 1, &src, nullptr);
+
+      glCompileShader(id);
+
+      GLint success;
+      glGetShaderiv(id, GL_COMPILE_STATUS, &success);
+
+      if (!success) {
+        GLchar infoLog[512];
+        glGetShaderInfoLog(id, 512, nullptr, infoLog);
+        
+        cerr << "Compilation of shader '" << path << "' failed:" << endl
+             << infoLog;
+      }
+    }
+
+    ~Shader() {
+      glDeleteShader(id);
+    }
+};
+
+class UniformProxy {
+  friend class Program;
+
+  GLuint program;
+  const char *name;
+
+  private:
+    UniformProxy(GLuint id, const char *name)
+      : program { id }
+      , name { name }
+      , location { glGetUniformLocation(program, name) }
+    { }
+
+  public:
+    const GLint location;
+
+    template<typename T>
+    void operator=(const T &value) {
+      throw domain_error {
+        "Uniform assignment not implemented for" + string(typeid(T).name())
+      };
+    }
+};
+
+template <>
+void UniformProxy::operator=(const vec3 &v) {
+  glUniform3f(location, v.x, v.y, v.z);
+}
+
+template <>
+void UniformProxy::operator=(const mat4 &m) {
+  glUniformMatrix4fv(location, 1, GL_FALSE, value_ptr(m));
+}
+
+class Program {
+  public:
+    GLuint id;
+    string name;
+
+    Program(string name, const Shader &vsh, const Shader &fsh)
+      : id { glCreateProgram() }
+      , name { name }
+    {
+      glAttachShader(id, vsh.id);
+      glAttachShader(id, fsh.id);
+
+      glLinkProgram(id);
+      
+      GLint success;
+      glGetProgramiv(id, GL_LINK_STATUS, &success);
+
+      if (!success) {
+        GLchar infoLog[512];
+        glGetProgramInfoLog(id, 512, nullptr, infoLog);
+
+        cerr << "Compilation of program '" << name << "' failed:" << endl
+             << infoLog;
+      }
+
+      glDetachShader(id, vsh.id);
+      glDetachShader(id, fsh.id);
+    }
+
+    ~Program() {
+      glDeleteProgram(id);
+    }
+
+    UniformProxy operator[](const char *name) {
+      return UniformProxy(id, name);
+    }
+
+    operator GLuint() const { return id; }
+};
 
 int main() {
   /* Create a window */
@@ -349,14 +477,14 @@ int main() {
   glBindVertexArray(0);
 
   /* Load shaders */
-  GLuint simple  = create_program("shd/simple.vert",  "shd/unicolor.frag");
-  GLuint outline = create_program("shd/outline.vert", "shd/unicolor.frag");
+  Program simple  { "Simple",  "shd/simple.vert",  "shd/unicolor.frag" };
+  Program outline { "Outline", "shd/outline.vert", "shd/unicolor.frag" };
 
   /* GLM math */
   Camera c1 = Camera::perspectiveCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 60.0f, 800.0f / 600.0f);
   controller.addCamera(&c1);
 
-  Camera c2 = Camera::orthographicCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), -3.0f, 3.0f, 3.0f, -3.0f);
+  Camera c2 = Camera::orthographicCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), -3.0f, 3.0f, -3.0f, 3.0f);
   controller.addCamera(&c2);
   
   /* Timing */
@@ -384,22 +512,16 @@ int main() {
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glUseProgram(outline);
-      GLuint mvp_loc_outline = glGetUniformLocation(outline, "MVP");
-      glUniformMatrix4fv(mvp_loc_outline, 1, GL_FALSE, value_ptr(mvp));
-
-      GLuint color_loc_outline = glGetUniformLocation(outline, "color");
-      glUniform3f(color_loc_outline, 0.898f, 0.867f, 0.796f);
+      outline["MVP"]   = mvp;
+      outline["color"] = vec3(0.898f, 0.867f, 0.796f);
 
       glCullFace(GL_FRONT);
       glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
     glUseProgram(0);
 
     glUseProgram(simple);
-      GLuint mvp_loc_simple = glGetUniformLocation(simple, "MVP");
-      glUniformMatrix4fv(mvp_loc_simple, 1, GL_FALSE, value_ptr(mvp));
-
-      GLuint color_loc_simple = glGetUniformLocation(outline, "color");
-      glUniform3f(color_loc_simple, 0.655f, 0.773f, 0.741f);
+      simple["MVP"]   = mvp;
+      simple["color"] = vec3(0.655f, 0.773f, 0.741f);
 
       glCullFace(GL_BACK);
       glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
@@ -407,11 +529,8 @@ int main() {
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     glUseProgram(outline);
-      mvp_loc_outline = glGetUniformLocation(simple, "MVP");
-      glUniformMatrix4fv(mvp_loc_outline, 1, GL_FALSE, value_ptr(mvp));
-
-      color_loc_outline = glGetUniformLocation(outline, "color");
-      glUniform3f(color_loc_outline, 0.922f, 0.482f, 0.349f);
+      outline["MVP"]   = mvp;
+      outline["color"] = vec3(0.922f, 0.482f, 0.349f);
 
       glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
     glUseProgram(0);

@@ -9,6 +9,7 @@ find_package(OpenGL REQUIRED)
 find_package(GLEW   REQUIRED STATIC)
 find_package(glfw3  REQUIRED)
 find_package(glm    REQUIRED)
+find_package(Boost  REQUIRED COMPONENTS system filesystem)
 
 # Add targets
 add_executable(
@@ -22,6 +23,7 @@ target_include_directories(
   ${GLEW_INCLUDE_DIRS}
   ${GLFW_INCLUDE_DIRS}
   ${GLM_INCLUDE_DIRS}
+  ${Boost_INCLUDE_DIRS}
 )
 
 target_link_libraries(
@@ -30,6 +32,7 @@ target_link_libraries(
   ${GLEW_LIBRARIES}
   glfw
   ${GLM_LIBRARIES}
+  ${Boost_LIBRARIES}
 )
 
 # Copy resources
