@@ -47,7 +47,7 @@ GLuint create_shader(GLenum type, const char *path) {
 
   GLint success;
   GLchar infoLog[512];
-  glGetShaderiv(id, GL_COMPILE_STATUS, &success);
+  glGetShaderiv(id, GL_LINK_STATUS, &success);
 
   if (!success) {
     glGetShaderInfoLog(id, 512, nullptr, infoLog);
