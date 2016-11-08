@@ -11,6 +11,34 @@ find_package(glfw3  REQUIRED)
 find_package(glm    REQUIRED)
 find_package(Boost  REQUIRED COMPONENTS system filesystem)
 
+# Add ImGui
+add_library(
+  imgui STATIC
+  imgui/src/imgui.cpp
+  imgui/src/imgui_draw.cpp
+  imgui/src/imgui_demo.cpp
+  imgui/src/imgui_impl_glfw_gl3.cpp
+)
+
+target_include_directories(
+  imgui PUBLIC
+  imgui/inc/
+)
+
+# Add SOIL
+add_library(soil STATIC
+  SOIL/src/image_helper.c
+  SOIL/src/stb_image_aug.c
+  SOIL/src/image_DXT.c
+  SOIL/src/SOIL.c
+)
+
+if (APPLE)
+  target_link_libraries(soil "-framework CoreFoundation")
+endif ()
+
+target_include_directories(soil PUBLIC SOIL/src/)
+
 # Add targets
 add_executable(
   ${PROJECT_NAME}
@@ -33,6 +61,8 @@ target_link_libraries(
   glfw
   ${GLM_LIBRARIES}
   ${Boost_LIBRARIES}
+  imgui
+  soil
 )
 
 # Copy resources

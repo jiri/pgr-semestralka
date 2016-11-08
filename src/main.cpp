@@ -20,6 +20,11 @@ using namespace glm;
 #include <boost/filesystem.hpp>
 using namespace boost::filesystem;
 
+#include <imgui.h>
+#include <imgui_impl_glfw_gl3.h>
+
+#include <SOIL.h>
+
 char *slurp_file(const char *path) {
   char *buffer = nullptr;
   uint32_t length;
@@ -43,56 +48,6 @@ char *slurp_file(const char *path) {
   return buffer;
 }
 
-GLuint create_shader(GLenum type, const char *path) {
-  GLuint id = glCreateShader(type);
-  char *src = slurp_file(path);
-
-  glShaderSource(id, 1, &src, nullptr);
-  glCompileShader(id);
-
-  GLint success;
-  GLchar infoLog[512];
-  glGetShaderiv(id, GL_COMPILE_STATUS, &success);
-
-  if (!success) {
-    glGetShaderInfoLog(id, 512, nullptr, infoLog);
-    fprintf(stderr, "Compilation of shader '%s' failed:\n%s", path, infoLog);
-  }
-
-  return id;
-}
-
-GLuint create_program(const char *vpath, const char *fpath) {
-  GLuint id = glCreateProgram();
-
-  GLuint vsh = create_shader(GL_VERTEX_SHADER, vpath);
-  GLuint fsh = create_shader(GL_FRAGMENT_SHADER, fpath);
-
-  glAttachShader(id, vsh);
-  glAttachShader(id, fsh);
-  glLinkProgram(id);
-
-  glDeleteShader(vsh);
-  glDeleteShader(fsh);
-  
-  GLint success = 0;
-  glGetProgramiv(id, GL_LINK_STATUS, &success);
-
-  if (success == GL_FALSE) {
-    GLint maxLength = 0;
-    glGetProgramiv(id, GL_INFO_LOG_LENGTH, &maxLength);
-
-    GLchar *infoLog = (GLchar *) malloc(maxLength);
-
-    glGetProgramInfoLog(id, 512, nullptr, infoLog);
-
-    fprintf(stderr, "Compilation of program ('%s', '%s') failed:\n%s", vpath, fpath, infoLog);
-    free(infoLog);
-  }
-
-  return id;
-}
-
 void error_callback(int error, const char *message) {
   fprintf(stderr, "GLFW error: %s\n", message);
   glfwTerminate();
@@ -107,7 +62,6 @@ class Camera {
   friend class CameraController;
 
   private:
-    vec3 eye;
     vec3 direction;
     vec3 up;
     vec3 right;
@@ -122,6 +76,8 @@ class Camera {
   public:
     mat4 projection;
     mat4 view;
+
+    vec3 eye;
 
     Camera(mat4 p, const vec3 &e, const vec3 &c, const vec3 &u = vec3(0.0f, 1.0f, 0.0f))
       : projection { p }
@@ -140,7 +96,7 @@ class Camera {
       return Camera(projection, e, c);
     }
 
-    static Camera perspectiveCamera(const vec3 &e, const vec3 &c, GLfloat fov, GLfloat ratio, GLfloat near = 0.01f, GLfloat far = 100.0f) {
+    static Camera perspectiveCamera(const vec3 &e, const vec3 &c, GLfloat fov, GLfloat ratio, GLfloat near = 0.01f, GLfloat far = 1000.0f) {
       mat4 projection = perspective(radians(fov), ratio, near, far);
       return Camera(projection, e, c);
     }
@@ -267,7 +223,8 @@ class CameraController {
 
 CameraController controller;
 
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode) {
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+  /* ImGui_ImplGlfwGL3_KeyCallback(window, key, scancode, action, mods); */
   controller.handleKey(key, action);
 }
 
@@ -327,10 +284,10 @@ class Shader {
 class UniformProxy {
   friend class Program;
 
-  GLuint program;
-  const char *name;
-
   private:
+    GLuint program;
+    const char *name;
+
     UniformProxy(GLuint id, const char *name)
       : program { id }
       , name { name }
@@ -340,30 +297,72 @@ class UniformProxy {
   public:
     const GLint location;
 
-    template<typename T>
-    void operator=(const T &value) {
+    template <typename T>
+    void set(const T &value) {
       throw domain_error {
-        "Uniform assignment not implemented for" + string(typeid(T).name())
+        "Uniform assignment not implemented for " + string(typeid(T).name())
       };
+    }
+
+    template <typename T>
+    T get() {
+      throw domain_error {
+        "Uniform retrieval not implemented for " + string(typeid(T).name())
+      };
+    }
+
+    template <typename T>
+    void operator=(const T &value) {
+      set(value);
+    }
+
+    template <typename T>
+    operator T() {
+      return get<T>();
     }
 };
 
+/* Uniform implementations */
 template <>
-void UniformProxy::operator=(const vec3 &v) {
+void UniformProxy::set(const vec3 &v) {
+  GLint old_id;
+  glGetIntegerv(GL_CURRENT_PROGRAM, &old_id);
+
+  glUseProgram(program);
   glUniform3f(location, v.x, v.y, v.z);
+  glUseProgram(old_id);
 }
 
 template <>
-void UniformProxy::operator=(const mat4 &m) {
+vec3 UniformProxy::get() {
+  vec3 v;
+  glGetUniformfv(program, location, value_ptr(v));
+  return v;
+}
+
+template <>
+void UniformProxy::set(const mat4 &m) {
+  GLint old_id;
+  glGetIntegerv(GL_CURRENT_PROGRAM, &old_id);
+
+  glUseProgram(program);
   glUniformMatrix4fv(location, 1, GL_FALSE, value_ptr(m));
+  glUseProgram(old_id);
+}
+
+template <>
+mat4 UniformProxy::get() {
+  mat4 m;
+  glGetUniformfv(program, location, value_ptr(m));
+  return m;
 }
 
 class Program {
   public:
     GLuint id;
-    string name;
+    const char *name;
 
-    Program(string name, const Shader &vsh, const Shader &fsh)
+    Program(const char *name, const Shader &vsh, const Shader &fsh)
       : id { glCreateProgram() }
       , name { name }
     {
@@ -391,11 +390,51 @@ class Program {
       glDeleteProgram(id);
     }
 
-    UniformProxy operator[](const char *name) {
+    UniformProxy getUniform(const char *name) {
       return UniformProxy(id, name);
     }
 
+    UniformProxy operator[](const char *name) {
+      return getUniform(name);
+    }
+
     operator GLuint() const { return id; }
+
+    void editor() {
+      ImGui::Begin(name);
+
+      /* ImGui::Text("Hello"); */
+
+      GLint count;
+      glGetProgramiv(id, GL_ACTIVE_UNIFORMS, &count);
+
+      for (GLuint i = 0; i < count; i++) {
+        GLint size;
+        GLenum type;
+
+        const GLsizei bufSize = 16;
+        GLchar name[bufSize];
+        GLsizei length;
+
+        glGetActiveUniform(id, i, bufSize, &length, &size, &type, name);
+        
+        switch (type) {
+          case GL_FLOAT_VEC3: {
+            vec3 v = getUniform(name);
+
+            glGetUniformfv(id, getUniform(name).location, value_ptr(v));
+            ImGui::ColorEdit3(name, value_ptr(v));
+
+            getUniform(name) = v;
+          } break;
+
+          default:
+            break;
+        }
+      }
+
+      ImGui::End();
+    }
 };
 
 int main() {
@@ -409,11 +448,16 @@ int main() {
   glfwWindowHint(GLFW_OPENGL_PROFILE,         GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT,  GL_TRUE);
   glfwWindowHint(GLFW_RESIZABLE,              GL_FALSE);
+  /* glfwWindowHint(GLFW_SAMPLES,                4); */
 
   GLFWwindow *window = glfwCreateWindow(800, 600, "", nullptr, nullptr);
 
   glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
+  /* Initialize ImGui */
+  /* ImGui_ImplGlfwGL3_Init(window, false); */
+
+  /* Set up callbacks */
   glfwSetKeyCallback(window, key_callback);
   glfwSetCursorPosCallback(window, mouse_callback);
 
@@ -428,36 +472,66 @@ int main() {
   }
 
   glEnable(GL_DEPTH_TEST);
-  glEnable(GL_CULL_FACE);
+  /* glEnable(GL_CULL_FACE); */
 
   /* VSync on */
   glfwSwapInterval(1);
 
   /* Create data */
-                             /*                       */
-                             /* y                z    */
-  vector<GLfloat> vertices { /* |               /     */
-    -0.5f, -0.5f, -0.5f,     /*                       */
-    -0.5f, -0.5f,  0.5f,     /*    3---------7        */
-    -0.5f,  0.5f, -0.5f,     /*   /|        /|        */
-    -0.5f,  0.5f,  0.5f,     /*  / |       / |        */
-     0.5f, -0.5f, -0.5f,     /* 2---------6  |        */
-     0.5f, -0.5f,  0.5f,     /* |  |      |  |        */
-     0.5f,  0.5f, -0.5f,     /* |  1------|--5        */
-     0.5f,  0.5f,  0.5f,     /* | /       | /         */
-  };                         /* |/        |/          */
-                             /* 0---------4     -- x  */
-                             /*                       */
+  //                            /*                       */
+  //                            /* y                z    */
+  // vector<GLfloat> vertices { /* |               /     */
+  //   -0.5f, -0.5f, -0.5f,     /*                       */
+  //   -0.5f, -0.5f,  0.5f,     /*    3---------7        */
+  //   -0.5f,  0.5f, -0.5f,     /*   /|        /|        */
+  //   -0.5f,  0.5f,  0.5f,     /*  / |       / |        */
+  //    0.5f, -0.5f, -0.5f,     /* 2---------6  |        */
+  //    0.5f, -0.5f,  0.5f,     /* |  |      |  |        */
+  //    0.5f,  0.5f, -0.5f,     /* |  1------|--5        */
+  //    0.5f,  0.5f,  0.5f,     /* | /       | /         */
+  // };                         /* |/        |/          */
+  //                            /* 0---------4     -- x  */
+  //                            /*                       */
 
-  vector<GLuint> indices {
-    0, 1, 2,  1, 3, 2,
-    0, 2, 4,  4, 2, 6,
-    0, 4, 1,  5, 1, 4,
-    5, 4, 6,  5, 6, 7,
-    6, 2, 3,  6, 3, 7,
-    1, 5, 3,  5, 7, 3,
-  };
+  // vector<GLuint> indices {
+  //   0, 1, 2,  1, 3, 2,
+  //   0, 2, 4,  4, 2, 6,
+  //   0, 4, 1,  5, 1, 4,
+  //   5, 4, 6,  5, 6, 7,
+  //   6, 2, 3,  6, 3, 7,
+  //   1, 5, 3,  5, 7, 3,
+  // };
 
+  /* Create map */
+  const GLuint map_size = 2048;
+
+  vector<GLfloat> vertices;
+  vector<GLuint> indices;
+
+  for (GLuint y = 0; y < map_size; y++) {
+    for (GLuint x = 0; x < map_size; x++) {
+      vertices.insert(vertices.end(), {
+          x * 1.0f,
+          y * 1.0f,
+          0.0f,
+      });
+    }
+  }
+
+  for (GLuint y = 0; y < map_size - 1; y++) {
+    for (GLuint x = 0; x < map_size - 1; x++) {
+      indices.insert(indices.end(), {
+        (y + 0) * map_size + (x + 0),
+        (y + 0) * map_size + (x + 1),
+        (y + 1) * map_size + (x + 1),
+        (y + 0) * map_size + (x + 0),
+        (y + 1) * map_size + (x + 1),
+        (y + 1) * map_size + (x + 0),
+      });
+    }
+  }
+
+  /* Create buffers */
   GLuint vao;
   glGenVertexArrays(1, &vao);
 
@@ -476,17 +550,95 @@ int main() {
     glEnableVertexAttribArray(0);
   glBindVertexArray(0);
 
-  /* Load shaders */
-  Program simple  { "Simple",  "shd/simple.vert",  "shd/unicolor.frag" };
-  Program outline { "Outline", "shd/outline.vert", "shd/unicolor.frag" };
+  mat4 model;
+  model *= rotate(radians(-90.0f), vec3(1.0f, 0.0f, 0.0f));
+  model *= scale(vec3(0.01f, 0.01f, 0.01f));
+  /* model *= translate(vec3(map_size * -0.5f, map_size * -0.5f, 0.0f)); */
 
-  /* GLM math */
-  Camera c1 = Camera::perspectiveCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), 60.0f, 800.0f / 600.0f);
+  /* Load textures */
+  GLuint tex; {
+    int width, height;
+    unsigned char *image = SOIL_load_image(
+        "res/spindl.jpg",
+        &width, &height,
+        nullptr,
+        SOIL_LOAD_RGB
+    );
+
+    if (image == nullptr) {
+      cerr << SOIL_last_result() << endl;
+    }
+
+    glGenTextures(1, &tex);  
+
+    glBindTexture(GL_TEXTURE_2D, tex);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+      glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    SOIL_free_image_data(image);
+  }
+
+  GLuint tex2; {
+    int width, height;
+    unsigned char *image = SOIL_load_image(
+        "res/forest.jpg",
+        &width, &height,
+        nullptr,
+        SOIL_LOAD_RGB
+    );
+
+    if (image == nullptr) {
+      cerr << SOIL_last_result() << endl;
+    }
+
+    glGenTextures(1, &tex2);  
+
+    glBindTexture(GL_TEXTURE_2D, tex2);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+      glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    SOIL_free_image_data(image);
+  }
+
+  /* Cameras */
+  Camera c1 = Camera::perspectiveCamera(
+      vec3(0.0f, 5.0f, 0.0f),
+      vec3(0.0f, 0.0f, 0.0f),
+      60.0f,
+      800.0f / 600.0f
+  );
   controller.addCamera(&c1);
 
-  Camera c2 = Camera::orthographicCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), -3.0f, 3.0f, -3.0f, 3.0f);
-  controller.addCamera(&c2);
-  
+  /* Camera c2 = Camera::orthographicCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), -3.0f, 3.0f, -3.0f, 3.0f); */
+  /* controller.addCamera(&c2); */
+
+  /* Load shaders */
+  mat4 mvp = controller.camera()->projection * controller.camera()->view;
+
+  Program simple  { "Simple",  "shd/simple.vert",  "shd/unicolor.frag" };
+  simple["MVP"]   = mvp;
+  simple["color"] = vec3(0.655f, 0.773f, 0.741f);
+
+  Program outline { "Outline", "shd/outline.vert", "shd/outline.frag" };
+  outline["MVP"]   = mvp;
+  /* outline["color"] = vec3(0.898f, 0.867f, 0.796f); */
+
+  Program wires   { "Wires",   "shd/outline.vert", "shd/unicolor.frag" };
+  wires["MVP"]   = mvp;
+  wires["color"] = vec3(0.922f, 0.482f, 0.349f);
+
   /* Timing */
   GLfloat delta = 0.0f;
   GLfloat lastFrame = 0.0f; 
@@ -500,7 +652,12 @@ int main() {
 
     /* Input */
     glfwPollEvents();
+    /* ImGui_ImplGlfwGL3_NewFrame(); */
+
     controller.update(delta);
+
+    /* Shader editors */
+    /* simple.editor(); */
 
     /* Rendering */
     glClearColor(0.322f, 0.275f, 0.337f, 1.0f);
@@ -508,39 +665,46 @@ int main() {
 
     glBindVertexArray(vao);
 
-    mat4 mvp = controller.camera()->projection * controller.camera()->view;
+    /* glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); */
+    /* glUseProgram(outline); */
+    /*   glCullFace(GL_FRONT); */
+    /*   glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr); */
+    /* glUseProgram(0); */
 
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    /* glUseProgram(simple); */
+    /*   glCullFace(GL_BACK); */
+    /*   glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr); */
+    /* glUseProgram(0); */
+
+    /* glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); */
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, tex2);
+
     glUseProgram(outline);
-      outline["MVP"]   = mvp;
-      outline["color"] = vec3(0.898f, 0.867f, 0.796f);
-
-      glCullFace(GL_FRONT);
-      glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
-    glUseProgram(0);
-
-    glUseProgram(simple);
-      simple["MVP"]   = mvp;
-      simple["color"] = vec3(0.655f, 0.773f, 0.741f);
-
-      glCullFace(GL_BACK);
-      glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
-    glUseProgram(0);
-
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    glUseProgram(outline);
-      outline["MVP"]   = mvp;
-      outline["color"] = vec3(0.922f, 0.482f, 0.349f);
+      outline["MVP"] = controller.camera()->projection * controller.camera()->view * model;
+      glUniform1i(outline["tex"].location, 0);
+      glUniform1i(outline["tex2"].location, 1);
 
       glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
     glUseProgram(0);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
 
     glBindVertexArray(0);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    /* ImGui::Render(); */
 
     glfwSwapBuffers(window);
   }
 
   /* TODO: Cleanup */
+
+  /* ImGui_ImplGlfwGL3_Shutdown(); */
+  glfwTerminate();
 
   return 0;
 }
