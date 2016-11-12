@@ -15,6 +15,7 @@ using namespace std;
 #include <glm/gtx/transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/rotate_vector.hpp>
+#include <glm/gtc/constants.hpp>
 using namespace glm;
 
 #include <boost/filesystem.hpp>
@@ -281,21 +282,18 @@ class Shader {
     }
 };
 
-class UniformProxy {
+class Uniform {
   friend class Program;
 
   private:
     GLuint program;
     const char *name;
 
-    UniformProxy(GLuint id, const char *name)
+    Uniform(GLuint id, const char *name)
       : program { id }
       , name { name }
       , location { glGetUniformLocation(program, name) }
     { }
-
-  public:
-    const GLint location;
 
     template <typename T>
     void set(const T &value) {
@@ -311,9 +309,12 @@ class UniformProxy {
       };
     }
 
+  public:
+    const GLint location;
+
     template <typename T>
     void operator=(const T &value) {
-      set(value);
+      set<T>(value);
     }
 
     template <typename T>
@@ -324,7 +325,7 @@ class UniformProxy {
 
 /* Uniform implementations */
 template <>
-void UniformProxy::set(const vec3 &v) {
+void Uniform::set(const vec3 &v) {
   GLint old_id;
   glGetIntegerv(GL_CURRENT_PROGRAM, &old_id);
 
@@ -334,14 +335,14 @@ void UniformProxy::set(const vec3 &v) {
 }
 
 template <>
-vec3 UniformProxy::get() {
+vec3 Uniform::get() {
   vec3 v;
   glGetUniformfv(program, location, value_ptr(v));
   return v;
 }
 
 template <>
-void UniformProxy::set(const mat4 &m) {
+void Uniform::set(const mat4 &m) {
   GLint old_id;
   glGetIntegerv(GL_CURRENT_PROGRAM, &old_id);
 
@@ -351,10 +352,27 @@ void UniformProxy::set(const mat4 &m) {
 }
 
 template <>
-mat4 UniformProxy::get() {
+mat4 Uniform::get() {
   mat4 m;
   glGetUniformfv(program, location, value_ptr(m));
   return m;
+}
+
+template <>
+void Uniform::set(const float &f) {
+  GLint old_id;
+  glGetIntegerv(GL_CURRENT_PROGRAM, &old_id);
+
+  glUseProgram(program);
+  glUniform1f(location, f);
+  glUseProgram(old_id);
+}
+
+template <>
+float Uniform::get() {
+  float f;
+  glGetUniformfv(program, location, &f);
+  return f;
 }
 
 class Program {
@@ -390,11 +408,11 @@ class Program {
       glDeleteProgram(id);
     }
 
-    UniformProxy getUniform(const char *name) {
-      return UniformProxy(id, name);
+    Uniform getUniform(const char *name) {
+      return Uniform(id, name);
     }
 
-    UniformProxy operator[](const char *name) {
+    Uniform operator[](const char *name) {
       return getUniform(name);
     }
 
@@ -402,8 +420,6 @@ class Program {
 
     void editor() {
       ImGui::Begin(name);
-
-      /* ImGui::Text("Hello"); */
 
       GLint count;
       glGetProgramiv(id, GL_ACTIVE_UNIFORMS, &count);
@@ -428,6 +444,12 @@ class Program {
             getUniform(name) = v;
           } break;
 
+          case GL_FLOAT: {
+            float f = getUniform(name);
+            ImGui::SliderFloat(name, &f, 0.0f, 4096.0f, "%.0f");
+            getUniform(name) = f;
+          } break;
+
           default:
             break;
         }
@@ -436,6 +458,79 @@ class Program {
       ImGui::End();
     }
 };
+
+class Texture {
+  private:
+    GLuint id;
+    GLint unit;
+    int _w, _h;
+
+  public:
+    const int &width;
+    const int &height;
+
+    Texture(const char *path)
+      : width  { _w }
+      , height { _h }
+      , unit { -1 }
+    {
+      uint8_t *image = SOIL_load_image(path, &_w, &_h, nullptr, SOIL_LOAD_RGB);
+
+      if (image == nullptr) {
+        throw runtime_error {
+          SOIL_last_result()
+        };
+      }
+
+      glGenTextures(1, &id);  
+
+      glBindTexture(GL_TEXTURE_2D, id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, _w, _h, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+        glGenerateMipmap(GL_TEXTURE_2D);
+      glBindTexture(GL_TEXTURE_2D, 0);
+
+      SOIL_free_image_data(image);
+    }
+
+    ~Texture() {
+      glDeleteTextures(1, &id);
+    }
+
+    operator GLuint() {
+      return id;
+    }
+
+    operator GLuint() const {
+      return id;
+    }
+
+    void bind(GLint u) {
+      unit = u;
+      glActiveTexture(GL_TEXTURE0 + unit);
+      glBindTexture(GL_TEXTURE_2D, id);
+    }
+
+    void unbind() {
+      glActiveTexture(GL_TEXTURE0 + unit);
+      glBindTexture(GL_TEXTURE_2D, 0);
+      unit = -1;
+    }
+};
+
+template <>
+void Uniform::set(const Texture &t) {
+  GLint old_id;
+  glGetIntegerv(GL_CURRENT_PROGRAM, &old_id);
+
+  glUseProgram(program);
+  glUniform1ui(location, t);
+  glUseProgram(old_id);
+}
 
 int main() {
   /* Create a window */
@@ -448,18 +543,19 @@ int main() {
   glfwWindowHint(GLFW_OPENGL_PROFILE,         GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT,  GL_TRUE);
   glfwWindowHint(GLFW_RESIZABLE,              GL_FALSE);
+  glfwWindowHint(GLFW_FOCUSED,                GL_TRUE);
   /* glfwWindowHint(GLFW_SAMPLES,                4); */
 
   GLFWwindow *window = glfwCreateWindow(800, 600, "", nullptr, nullptr);
 
-  glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+  /* glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED); */
 
   /* Initialize ImGui */
-  /* ImGui_ImplGlfwGL3_Init(window, false); */
+  ImGui_ImplGlfwGL3_Init(window, true);
 
   /* Set up callbacks */
-  glfwSetKeyCallback(window, key_callback);
-  glfwSetCursorPosCallback(window, mouse_callback);
+  /* glfwSetKeyCallback(window, key_callback); */
+  /* glfwSetCursorPosCallback(window, mouse_callback); */
 
   /* Initialize OpenGL */
   glfwMakeContextCurrent(window);
@@ -551,97 +647,39 @@ int main() {
   glBindVertexArray(0);
 
   mat4 model;
-  model *= rotate(radians(-90.0f), vec3(1.0f, 0.0f, 0.0f));
-  model *= scale(vec3(0.01f, 0.01f, 0.01f));
+  /* model *= rotate(radians(90.0f), vec3(1.0f, 0.0f, 0.0f)); */
+  /* model *= rotate(radians(-90.0f), vec3(0.0f, 1.0f, 0.0f)); */
+  /* model *= scale(vec3(1.0f / map_size)); */
+  /* model *= translate(vec3(-0.5f * map_size, -0.5f * map_size, 0.0f)); */
   /* model *= translate(vec3(map_size * -0.5f, map_size * -0.5f, 0.0f)); */
 
   /* Load textures */
-  GLuint tex; {
-    int width, height;
-    unsigned char *image = SOIL_load_image(
-        "res/spindl.jpg",
-        &width, &height,
-        nullptr,
-        SOIL_LOAD_RGB
-    );
-
-    if (image == nullptr) {
-      cerr << SOIL_last_result() << endl;
-    }
-
-    glGenTextures(1, &tex);  
-
-    glBindTexture(GL_TEXTURE_2D, tex);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
-      glGenerateMipmap(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    SOIL_free_image_data(image);
-  }
-
-  GLuint tex2; {
-    int width, height;
-    unsigned char *image = SOIL_load_image(
-        "res/forest.jpg",
-        &width, &height,
-        nullptr,
-        SOIL_LOAD_RGB
-    );
-
-    if (image == nullptr) {
-      cerr << SOIL_last_result() << endl;
-    }
-
-    glGenTextures(1, &tex2);  
-
-    glBindTexture(GL_TEXTURE_2D, tex2);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
-      glGenerateMipmap(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    SOIL_free_image_data(image);
-  }
+  Texture heightmap { "res/spindl.jpg" };
 
   /* Cameras */
-  Camera c1 = Camera::perspectiveCamera(
+  mat4 projection = perspective(radians(60.0f), 4.0f / 3.0f, 0.01f, 100.0f);
+  mat4 view = lookAt(
       vec3(0.0f, 5.0f, 0.0f),
-      vec3(0.0f, 0.0f, 0.0f),
-      60.0f,
-      800.0f / 600.0f
+      vec3(1.0f, 0.0f, 1.0f),
+      vec3(0.0f, 1.0f, 0.0f)
   );
-  controller.addCamera(&c1);
-
-  /* Camera c2 = Camera::orthographicCamera(vec3(5.0f, 5.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), -3.0f, 3.0f, -3.0f, 3.0f); */
-  /* controller.addCamera(&c2); */
 
   /* Load shaders */
-  mat4 mvp = controller.camera()->projection * controller.camera()->view;
-
-  Program simple  { "Simple",  "shd/simple.vert",  "shd/unicolor.frag" };
-  simple["MVP"]   = mvp;
-  simple["color"] = vec3(0.655f, 0.773f, 0.741f);
-
   Program outline { "Outline", "shd/outline.vert", "shd/outline.frag" };
-  outline["MVP"]   = mvp;
-  /* outline["color"] = vec3(0.898f, 0.867f, 0.796f); */
 
-  Program wires   { "Wires",   "shd/outline.vert", "shd/unicolor.frag" };
-  wires["MVP"]   = mvp;
-  wires["color"] = vec3(0.922f, 0.482f, 0.349f);
+  outline["MVP"]      = projection * view * model;
+  outline["map_size"] = (GLfloat) map_size - 1;
+  outline["height"]   = map_size / 4.0f;
 
   /* Timing */
   GLfloat delta = 0.0f;
   GLfloat lastFrame = 0.0f; 
+
+  /* Params */
+  vec3 position {  0.0f,  2.0f,  2.0f };
+  vec3 target   {  0.0f,  0.0f,  0.0f };
+
+  float rot[3] { -90.0f, 0.0f, 0.0f };
 
   /* Main loop */
   while (!glfwWindowShouldClose(window)) {
@@ -652,12 +690,31 @@ int main() {
 
     /* Input */
     glfwPollEvents();
-    /* ImGui_ImplGlfwGL3_NewFrame(); */
+    ImGui_ImplGlfwGL3_NewFrame();
 
-    controller.update(delta);
+    /* controller.update(delta); */
 
     /* Shader editors */
-    /* simple.editor(); */
+    ImGui::Begin("Camera & model");
+      ImGui::SliderFloat3("Camera position", value_ptr(position), -30.0f, 30.0f);
+      ImGui::SliderFloat3("Camera target",   value_ptr(target),   -30.0f, 30.0f);
+
+      ImGui::SliderFloat3("Rotation", rot, 0.0f, 360.0f);
+
+      ImGui::Image((GLvoid*)(GLuint)heightmap, ImVec2(100, 100), ImVec2(0,0), ImVec2(1,1), ImColor(255,255,255,255), ImColor(255,255,255,128));
+    ImGui::End();
+
+    mat4 projection = perspective(radians(60.0f), 4.0f / 3.0f, 0.01f, 100.0f);
+    mat4 view = lookAt(position, target, vec3(0.0f, 1.0f, 0.0f));
+
+    mat4 model;
+    model *= rotate(radians(rot[0]), vec3(1.0f, 0.0f, 0.0f));
+    model *= rotate(radians(rot[1]), vec3(0.0f, 1.0f, 0.0f));
+    model *= rotate(radians(rot[2]), vec3(0.0f, 0.0f, 1.0f));
+    model *= translate(vec3(-0.5f, -0.5f,  0.0f));
+    model *= scale(vec3(1.0f / map_size));
+
+    outline.editor();
 
     /* Rendering */
     glClearColor(0.322f, 0.275f, 0.337f, 1.0f);
@@ -665,45 +722,27 @@ int main() {
 
     glBindVertexArray(vao);
 
-    /* glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); */
-    /* glUseProgram(outline); */
-    /*   glCullFace(GL_FRONT); */
-    /*   glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr); */
-    /* glUseProgram(0); */
-
-    /* glUseProgram(simple); */
-    /*   glCullFace(GL_BACK); */
-    /*   glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr); */
-    /* glUseProgram(0); */
-
-    /* glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); */
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex);
-
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, tex2);
+    heightmap.bind(0);
 
     glUseProgram(outline);
-      outline["MVP"] = controller.camera()->projection * controller.camera()->view * model;
-      glUniform1i(outline["tex"].location, 0);
-      glUniform1i(outline["tex2"].location, 1);
+      outline["MVP"] = projection * view * model;
+      outline["heightmap"] = heightmap;
 
       glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, nullptr);
     glUseProgram(0);
 
     glBindTexture(GL_TEXTURE_2D, 0);
-
     glBindVertexArray(0);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    /* ImGui::Render(); */
+    ImGui::Render();
 
     glfwSwapBuffers(window);
   }
 
   /* TODO: Cleanup */
 
-  /* ImGui_ImplGlfwGL3_Shutdown(); */
+  ImGui_ImplGlfwGL3_Shutdown();
   glfwTerminate();
 
   return 0;

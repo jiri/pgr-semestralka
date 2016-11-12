@@ -2,14 +2,16 @@
 
 uniform mat4 MVP;
 
-layout (location = 0) in vec3 position;
+uniform sampler2D heightmap;
+uniform float map_size;
+uniform float height;
 
-uniform sampler2D tex;
+layout (location = 0) in vec3 position;
 
 out vec3 vpos;
 
 void main() {
-  float h = texture(tex, position.xy / 2048.0).x * 500;
+  float h = texture(heightmap, position.xy / map_size).z * height;
   gl_Position = MVP * vec4(position.xy, h, 1.0);
   vpos = position;
 }
